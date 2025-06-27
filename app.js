@@ -16,7 +16,7 @@ const app = express();
 
 
 const corsOptions = {
-  origin: 'http://localhost:5173',
+  origin: 'https://amruta-assignment-frontend.vercel.app/',
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type'],
 };
