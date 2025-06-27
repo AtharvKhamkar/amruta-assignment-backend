@@ -126,7 +126,7 @@ app.post('/submit', upload.single('video'), async (req, res) => {
 
     await transporter.sendMail({
       from: process.env.MAIL_SENDER,
-      to: process.env.ADMIN_EMAIL,
+      to: email,
       subject: 'New Video Submission',
       text: `New video submitted by ${name}.\n\nView it at: ${pageUrl}`,
     });
