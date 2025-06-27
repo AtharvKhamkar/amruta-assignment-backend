@@ -7,30 +7,30 @@ const QRCode = require('qrcode');
 const nodemailer = require('nodemailer');
 const dotenv = require('dotenv');
 const { v2: cloudinary } = require('cloudinary');
+const mongoose = require('mongoose');
+const Submission = require('./models/submission');
 
 dotenv.config();
 
-
-
 const app = express();
 
-
+// CORS setup
 const corsOptions = {
-  origin: '*',
+  origin: '*', // or your frontend domain in production
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type'],
 };
-
 app.use(cors(corsOptions));
 
-
-
-
+// JSON parsing middleware
 app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// In-memory data storage
-let submissions = [];
+// MongoDB connection
+mongoose.connect(process.env.MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('❌ MongoDB connection error:', err));
 
 // Cloudinary config
 cloudinary.config({
@@ -39,17 +39,20 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Multer setup for memory buffer
+// Multer for handling video upload (in memory)
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
 // POST /submit
 app.post('/submit', upload.single('video'), async (req, res) => {
   const { name, email, company, location, template } = req.body;
-  const videoBuffer = req.file.buffer;
+  const videoBuffer = req.file?.buffer;
   const finalId = Date.now().toString();
 
+  if (!videoBuffer) return res.status(400).json({ error: 'Video not uploaded' });
+
   try {
+    // Upload video to Cloudinary
     const streamUpload = (buffer) => {
       return new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
@@ -68,20 +71,34 @@ app.post('/submit', upload.single('video'), async (req, res) => {
       });
     };
 
-    const result = await streamUpload(videoBuffer);
-    const videoUrl = result.secure_url;
+    const videoResult = await streamUpload(videoBuffer);
+    const videoUrl = videoResult.secure_url;
     const pageUrl = `${process.env.FRONTEND_URL}/user/${finalId}`;
 
-    // QR code
-    const qrDir = 'uploads/qrcodes';
-    fs.mkdirSync(qrDir, { recursive: true });
-    const qrCodePath = `${qrDir}/${finalId}.png`;
+    // Generate QR code as buffer
+    const qrBuffer = await QRCode.toBuffer(pageUrl);
 
-    await QRCode.toFile(qrCodePath, pageUrl);
-    const qrRelativePath = `/${qrCodePath}`;
+    // Upload QR code to Cloudinary
+    const qrUploadResult = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: 'image',
+          folder: 'qr_codes',
+          public_id: `qr_${finalId}`,
+          overwrite: true,
+        },
+        (error, result) => {
+          if (result) resolve(result);
+          else reject(error);
+        }
+      );
+      stream.end(qrBuffer);
+    });
 
-    // Store submission
-    const submission = {
+    const qrPath = qrUploadResult.secure_url;
+
+    // Save to MongoDB
+    const submission = await Submission.create({
       id: finalId,
       name,
       email,
@@ -89,13 +106,11 @@ app.post('/submit', upload.single('video'), async (req, res) => {
       location,
       template,
       videoUrl,
-      qrPath: qrRelativePath,
+      qrPath,
       pageUrl,
-    };
+    });
 
-    submissions.push(submission);
-
-    // Nodemailer transporter
+    // Send mail
     const transporter = nodemailer.createTransport({
       host: process.env.MAIL_HOST,
       port: parseInt(process.env.MAIL_PORT),
@@ -124,16 +139,26 @@ app.post('/submit', upload.single('video'), async (req, res) => {
 });
 
 // GET /user/:id
-app.get('/user/:id', (req, res) => {
-  const data = submissions.find(s => s.id === req.params.id);
-  if (!data) return res.status(404).json({ error: 'Not found' });
-  res.json(data);
+app.get('/user/:id', async (req, res) => {
+  try {
+    const data = await Submission.findOne({ id: req.params.id });
+    if (!data) return res.status(404).json({ error: 'Not found' });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to retrieve submission' });
+  }
 });
 
 // GET /admin/submissions
-app.get('/admin/submissions', (req, res) => {
-  res.json(submissions);
+app.get('/admin/submissions', async (req, res) => {
+  try {
+    const data = await Submission.find();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch submissions' });
+  }
 });
 
+// Start server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
